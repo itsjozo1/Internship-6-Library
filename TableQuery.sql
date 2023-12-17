@@ -186,27 +186,33 @@ BEGIN
     JOIN Books B ON C.BookId = B.BookId
     WHERE L.LoanId = p_LoanId;
 
+    IF p_LoanDate IS NULL OR p_BookType IS NULL THEN
+        RETURN 0.0; 
+    END IF;
+
     is_lektira := (p_BookType = 'Lektira');
 
-    FOR i IN 0..CURRENT_DATE - p_LoanDate LOOP
+    FOR i IN 0..CASE
+    	WHEN CURRENT_DATE - p_LoanDate < 0 THEN 0
+		ELSE CURRENT_DATE - p_LoanDate
+		END
+    LOOP
         IF EXTRACT(MONTH FROM p_LoanDate + i * interval '1 day') BETWEEN 6 AND 9 THEN
             late_fee := late_fee + CASE 
-				WHEN EXTRACT(ISODOW FROM p_LoanDate + i * interval '1 day') IN (6, 7) 
-				THEN 0.20 
+				WHEN EXTRACT(ISODOW FROM p_LoanDate + i * interval '1 day') IN (6, 7) THEN 0.20 
 				ELSE 0.40 
-			END;
+				END;
         ELSE
             late_fee := late_fee + CASE 
-				WHEN is_lektira 
-				THEN 0.50
-            	WHEN EXTRACT(ISODOW FROM p_LoanDate + i * interval '1 day') IN (6, 7) 
-				THEN 0.20
-            	ELSE 0.30 
-			END;
+				WHEN is_lektira THEN 0.50
+				WHEN EXTRACT(ISODOW FROM p_LoanDate + i * interval '1 day') IN (6, 7) THEN 0.20
+				ELSE 0.30 
+				END;
         END IF;
     END LOOP;
 
     RETURN late_fee; 
 END;
 $$ LANGUAGE plpgsql;
+
 
