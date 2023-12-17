@@ -16,7 +16,7 @@ create table Authors (
 
 create table Books (
     BookId serial primary key,
-    Title varchar(100),
+    Title varchar(150) not null,
 	ReleaseDate date not null,
     BookType varchar(50) check(BookType in ('Lektira', 'Umjetnička', 'Znanstvena', 'Biografija', 'Stručna'))
 );
@@ -61,7 +61,7 @@ create table Loans (
 	LibraryId int references Libraries(LibraryId),
     UserId int references Users(UserId),
     LoanDate date not null,
-    ReturnDate date not null,
+    ReturnDate date,
 	ReturnedDate date
 );
 
@@ -71,18 +71,51 @@ create table LoansCopies(
 );
 
 
-CREATE OR REPLACE FUNCTION CheckBooksInLimit() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION CheckAndSetReturnedDate()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.ReturnedDate > NEW.LoanDate THEN
+        NEW.ReturnedDate := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER SetReturnedDateToNull
+BEFORE INSERT OR UPDATE ON Loans
+FOR EACH ROW
+EXECUTE FUNCTION CheckAndSetReturnedDate();
+
+
+CREATE OR REPLACE FUNCTION SetReturnedDateDefault()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.ReturnDate IS NULL THEN
+        NEW.ReturnDate := NEW.LoanDate + INTERVAL '20 days';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER UpdateReturnedDate
+BEFORE INSERT ON Loans
+FOR EACH ROW
+EXECUTE FUNCTION SetReturnedDateDefault();
+
+
+CREATE OR REPLACE FUNCTION CheckBooksInLimit() 
+RETURNS TRIGGER AS $$
 BEGIN
     IF (SELECT COUNT(*)
         FROM Loans L
         JOIN LoansCopies LC ON L.LoanId = LC.LoanId
-        WHERE L.UserId = NEW.UserId AND L.ReturnedDate IS NULL) >= 3 THEN
+        WHERE LC.CopyId = NEW.CopyId AND L.ReturnedDate IS NULL) >= 3 THEN
         RAISE EXCEPTION 'User reached the maximum number of allowed copies on loan.';
     END IF;
 
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
 
 CREATE TRIGGER CheckNumberOfLoanedBooks
 BEFORE INSERT ON LoansCopies
@@ -118,15 +151,12 @@ CREATE OR REPLACE FUNCTION ExtendLoan(p_loan_id INTEGER, p_extension_days INTEGE
 RETURNS VOID
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    v_book_loan record;
 BEGIN
-    SELECT *
-    INTO v_book_loan
-    FROM Loans
-    WHERE LoanId = p_loan_id;
-
-    IF v_book_loan.ReturnedDate IS NOT NULL THEN
+    IF EXISTS (
+        SELECT 1
+        FROM Loans
+        WHERE LoanId = p_loan_id AND ReturnedDate IS NOT NULL
+    ) THEN
         RAISE EXCEPTION 'Cannot extend loan for loan ID % because it has already been returned', p_loan_id;
     END IF;
 
@@ -134,16 +164,14 @@ BEGIN
     SET ReturnDate = ReturnDate + INTERVAL '1 day' * p_extension_days
     WHERE LoanId = p_loan_id;
 
-    SELECT *
-    INTO v_book_loan
-    FROM Loans
-    WHERE LoanId = p_loan_id;
-
-    IF v_book_loan.ReturnDate > CURRENT_DATE + INTERVAL '60 days' THEN
+    IF (SELECT ReturnDate > CURRENT_DATE + INTERVAL '60 days'
+        FROM Loans
+        WHERE LoanId = p_loan_id) THEN
         RAISE EXCEPTION 'Cannot extend loan for loan ID % beyond 60 days', p_loan_id;
     END IF;
 END;
 $$;
+
 
 CREATE OR REPLACE FUNCTION CalculateFee(p_LoanId int) RETURNS DECIMAL AS $$
 DECLARE
@@ -181,5 +209,4 @@ BEGIN
     RETURN late_fee; 
 END;
 $$ LANGUAGE plpgsql;
-
 
